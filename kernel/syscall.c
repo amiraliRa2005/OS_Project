@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "syscall.h"
 #include "defs.h"
+uint64 syscall_count = 0; //added
 
 // Fetch the uint64 at addr from the current process.
 int
@@ -101,6 +102,10 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
+extern uint64 sys_sysclcnt(void); //added
+extern uint64 sys_ptree(void); //added
+extern uint64 sys_physaddr(void); //added
+extern uint64 sys_chpnice(void);   //added
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -126,6 +131,10 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_sysclcnt] sys_sysclcnt, //added
+[SYS_ptree]    sys_ptree,    //added
+[SYS_physaddr] sys_physaddr, //adedd
+[SYS_chpnice] sys_chpnice,   //added
 };
 
 void
@@ -139,9 +148,26 @@ syscall(void)
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();
+    syscall_count++; //added
   } else {
     printf("%d %s: unknown sys call %d\n",
             p->pid, p->name, num);
     p->trapframe->a0 = -1;
   }
+}
+
+uint64
+sys_physaddr(void)
+{
+  uint64 va;
+  argaddr(0, &va);
+
+  struct proc *p = myproc();
+  
+  pte_t *pte = walk(p->pagetable, va, 0);
+  
+  if(pte == 0 || (*pte & PTE_V) == 0)
+    return -1;
+
+  return PTE2PA(*pte) / PGSIZE;
 }

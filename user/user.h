@@ -1,4 +1,5 @@
 #define SBRK_ERROR ((char *)-1)
+typedef unsigned int uint; //added
 
 struct stat;
 
@@ -24,6 +25,10 @@ int getpid(void);
 char* sys_sbrk(int,int);
 int pause(int);
 int uptime(void);
+int sysclcnt(void);                         //added
+int ptree(int, void*);                      //added
+int physaddr(void*);                        //added
+int chpnice(int pid, int priority);         //added
 
 // ulib.c
 int stat(const char*, struct stat*);

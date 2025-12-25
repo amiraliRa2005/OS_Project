@@ -1,3 +1,4 @@
+#include "proc_tree.h" //added
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -104,4 +105,9 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  int vruntime;
+  int weight;
+  int nice;
+  uint64 last_sched;
 };

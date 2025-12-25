@@ -6,6 +6,33 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+extern struct proc proc[NPROC];
+extern int nice_to_weight[40];
+
+
+uint64
+sys_chpnice(void)
+{
+  int pid, n_value;
+  struct proc *p;
+  
+  argint(0, &pid);
+  argint(1, &n_value);
+
+  if(n_value < -20 || n_value > 19) return -1;
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->pid == pid){
+      p->nice = n_value;
+      p->weight = nice_to_weight[n_value + 20];
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
 
 uint64
 sys_exit(void)
@@ -107,3 +134,41 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+//added
+extern struct proc proc[NPROC];
+uint64
+sys_sysclcnt(void)
+{
+  extern uint64 syscall_count;
+  return syscall_count;
+}
+
+//added
+uint64
+sys_ptree(void)
+{
+  int pid;
+  uint64 tree_addr;
+
+  argint(0, &pid);
+  argaddr(1, &tree_addr);
+
+  if (pid < 0 || tree_addr == 0)
+    return -1;
+
+  struct proc_tree tree;
+  if (build_process_tree(&tree, pid) < 0) {
+    printf("build_process_tree failed\n");
+    return -1;
+  }
+
+  struct proc *p = myproc();
+  if (copyout(p->pagetable, tree_addr, (char *)&tree, sizeof(tree)) < 0) {
+    printf("copyout failed\n");
+    return -1;
+  }
+
+  return 0;
+}
+

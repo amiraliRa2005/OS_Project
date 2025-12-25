@@ -42,3 +42,7 @@ entry("getpid");
 entry("sbrk");
 entry("pause");
 entry("uptime");
+entry("sysclcnt");
+entry("ptree");
+entry("physaddr");
+entry("chpnice");

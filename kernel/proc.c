@@ -5,6 +5,18 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "proc_tree.h"
+
+int nice_to_weight[40] = {
+ /* -20 */ 88761, 71755, 56483, 46273, 36291,
+ /* -15 */ 29154, 23254, 18705, 14949, 11916,
+ /* -10 */  9548,  7620,  6100,  4904,  3906,
+ /* -5 */  3121,  2501,  1991,  1586,  1277,
+ /* 0 */  1024,   820,   655,   526,   423,
+ /* 5 */   335,   272,   215,   172,   137,
+ /* 10 */   110,    87,    70,    56,    45,
+ /* 15 */    36,    29,    23,    18,    15
+};
 
 struct cpu cpus[NCPU];
 
@@ -146,6 +158,10 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->nice = 0;
+  p->weight = 1024;
+  p->vruntime = 0;
+  p->last_sched = ticks;
   return p;
 }
 
@@ -314,7 +330,7 @@ reparent(struct proc *p)
 
   for(pp = proc; pp < &proc[NPROC]; pp++){
     if(pp->parent == p){
-      pp->parent = initproc;
+      pp->parent = p->parent ? p->parent : initproc; //added for reparenting
       wakeup(initproc);
     }
   }
@@ -426,38 +442,39 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-
+  
   c->proc = 0;
   for(;;){
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
     intr_on();
-    intr_off();
 
-    int found = 0;
+    struct proc *best_p = 0;
+
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+        if(best_p == 0 || p->vruntime < best_p->vruntime) {
+          if(best_p)
+            release(&best_p->lock);
+          best_p = p;
+          continue;
+        }
       }
       release(&p->lock);
     }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
-      asm volatile("wfi");
+
+
+    if(best_p){
+      best_p->state = RUNNING;
+      c->proc = best_p;
+      
+
+      best_p->last_sched = ticks; 
+
+      swtch(&c->context, &best_p->context);
+
+
+      c->proc = 0;
+      release(&best_p->lock);
     }
   }
 }
@@ -495,6 +512,10 @@ yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
+  uint64 delta_exec = ticks - p->last_sched;
+  if(delta_exec > 0) {
+    p->vruntime += (delta_exec * 1024) / p->weight;
+  }
   p->state = RUNNABLE;
   sched();
   release(&p->lock);
@@ -687,4 +708,66 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+/*addedd*/
+int build_process_tree(struct proc_tree *tree, int root_pid)   
+{
+  struct proc *p;
+  int count = 0;
+
+  tree->count = 0;
+  for(int i = 0; i < MAX_PROCS; i++){
+    tree->procs[i].pid = 0;
+    tree->procs[i].ppid = -1;
+    tree->procs[i].state = 0;
+    tree->procs[i].child_count = 0;
+    for(int j = 0; j < MAX_CHILDREN; j++) tree->procs[i].children[j] = -1;
+  }
+
+  int pid_to_index[NPROC];
+  for(int i = 0; i < NPROC; i++) pid_to_index[i] = -1;
+
+  for(int i = 0; i < NPROC && count < MAX_PROCS; i++){
+    p = &proc[i];
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      safestrcpy(tree->procs[count].name, p->name, PROC_NAME_LEN);
+      tree->procs[count].pid = p->pid;
+      tree->procs[count].ppid = p->parent ? p->parent->pid : -1;
+      tree->procs[count].state = p->state;
+      tree->procs[count].child_count = 0;
+      for(int j = 0; j < MAX_CHILDREN; j++) tree->procs[count].children[j] = -1;
+
+      if(p->pid >= 0 && p->pid < NPROC) pid_to_index[p->pid] = count;
+      count++;
+    }
+    release(&p->lock);
+  }
+  tree->count = count;
+
+  for(int i = 0; i < tree->count; i++){
+    int parent_pid = tree->procs[i].ppid;
+    if(parent_pid != -1 && parent_pid < NPROC){
+      int idx = pid_to_index[parent_pid];
+      if(idx != -1){
+        if(tree->procs[idx].child_count < MAX_CHILDREN){
+          tree->procs[idx].children[ tree->procs[idx].child_count++ ] = tree->procs[i].pid;
+        }
+      }
+    }
+  }
+
+  int root_found = 0;
+  if(root_pid >= 0){
+    for(int i = 0; i < tree->count; i++){
+      if(tree->procs[i].pid == root_pid) { root_found = 1; break; }
+    }
+    if(!root_found){
+      printf("build_process_tree: root pid %d not found\n", root_pid);
+    }
+  }
+
+  printf("build_process_tree: built tree with %d processes\n", tree->count);
+  return 0;
 }

@@ -8,6 +8,8 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct proc_info;   //added
+struct proc_tree;   //added
 
 // bio.c
 void            binit(void);
@@ -59,6 +61,9 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void            incref(uint64);
+void            decref(uint64);
+int             get_ref(uint64 pa);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -101,6 +106,8 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+void            collect_proc_info(struct proc*, struct proc_info*); //added
+int             build_process_tree(struct proc_tree*, int);         //added
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -169,6 +176,7 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
+int             cow_handler(pagetable_t, uint64); //added
 
 // plic.c
 void            plicinit(void);
