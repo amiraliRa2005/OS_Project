@@ -110,4 +110,7 @@ struct proc {
   int weight;
   int nice;
   uint64 last_sched;
+
+  int timeslice;
+  int spent_ticks;
 };

@@ -69,8 +69,18 @@ usertrap(void)
   if(killed(p))
     kexit(-1);
 
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2){
+    struct proc *p = myproc();
+    if(p && p->state == RUNNING) {
+      p->spent_ticks++;
+      
+      // Preempt only if the process has exhausted its dynamic timeslice
+      // This implements the 'Target Latency' sharing model
+      if(p->spent_ticks >= p->timeslice) {
+       yield();
+      }
+    }
+  }
 
   prepare_return();
 
@@ -137,9 +147,15 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2 && myproc() != 0)
-    yield();
-
+  if(which_dev == 2 && myproc() != 0){
+    struct proc *p = myproc();
+    if(p && p->state == RUNNING) {
+      p->spent_ticks++;
+      if(p->spent_ticks >= p->timeslice) {
+        yield();
+      }
+    }
+  }
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
   w_sepc(sepc);

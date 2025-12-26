@@ -108,6 +108,7 @@ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 void            collect_proc_info(struct proc*, struct proc_info*); //added
 int             build_process_tree(struct proc_tree*, int);         //added
+int             chpnice(int, int);                                  //added
 
 // swtch.S
 void            swtch(struct context*, struct context*);

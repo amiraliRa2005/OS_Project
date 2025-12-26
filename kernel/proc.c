@@ -158,9 +158,12 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // Initialize CFS default values for new processes
   p->nice = 0;
-  p->weight = 1024;
+  p->weight = 1024;          // NICE_0_LOAD
   p->vruntime = 0;
+  p->timeslice = 10;         // Initial default slice
+  p->spent_ticks = 0;
   p->last_sched = ticks;
   return p;
 }
@@ -430,6 +433,32 @@ kwait(uint64 addr)
   }
 }
 
+//   Calculate the dynamic time quantum (timeslice) for a process.
+//   Based on the CFS algorithm (Algorithm 1, line 62 in project doc).
+//   Formula: ideal_runtime = target_latency * (p->weight / total_runnable_weight)
+//   This ensures high-priority processes (higher weight) receive longer 
+//   execution windows, reducing context switch overhead.
+int
+timeslice_for(struct proc *p)
+{
+  int total_weight = 0;
+  struct proc *rp;
+
+  for(rp = proc; rp < &proc[NPROC]; rp++) {
+    if(rp->state == RUNNABLE)
+      total_weight += rp->weight;
+  }
+  
+  if(total_weight == 0) return 10; 
+  
+  int target_latency = 20; 
+  int ideal = (target_latency * p->weight) / total_weight;
+  int min_granularity = 2;
+  
+  return (ideal < min_granularity) ? min_granularity : ideal;
+}
+
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -462,17 +491,17 @@ scheduler(void)
       release(&p->lock);
     }
 
-
     if(best_p){
+      // Dynamic Timeslice Allocation: Calculate quota before context switch
+      best_p->timeslice = timeslice_for(best_p);
+      best_p->spent_ticks = 0; 
+
       best_p->state = RUNNING;
       c->proc = best_p;
-      
-
       best_p->last_sched = ticks; 
-
+      
+      // Perform context switch to the selected process
       swtch(&c->context, &best_p->context);
-
-
       c->proc = 0;
       release(&best_p->lock);
     }
@@ -516,6 +545,8 @@ yield(void)
   if(delta_exec > 0) {
     p->vruntime += (delta_exec * 1024) / p->weight;
   }
+  p->last_sched = ticks;
+  p->spent_ticks = 0;
   p->state = RUNNABLE;
   sched();
   release(&p->lock);
