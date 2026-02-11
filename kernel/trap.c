@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "vm.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -47,21 +48,23 @@ usertrap(void)
   struct proc *p = myproc();
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  uint64 scause = r_scause();
+
+  if(scause == 8){
     if(killed(p))
       kexit(-1);
     p->trapframe->epc += 4;
     intr_on();
     syscall();
   } else if((which_dev = devintr()) != 0){
-  } else if(r_scause() == 15){ 
+  } else if(scause == 12 || scause == 13 || scause == 15){
     uint64 va = r_stval();
-    
-    if(cow_handler(p->pagetable, va) < 0){
+    int action = (scause == 15) ? VMFAULT_WRITE : (scause == 12 ? VMFAULT_EXEC : VMFAULT_READ);
+    if(vmfault(p->pagetable, va, action) < 0){
       p->killed = 1;
     }
   } else {
-    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
+    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", scause, p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
     setkilled(p);
   }

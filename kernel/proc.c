@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 #include "proc_tree.h"
+#include "namespace.h"
+#include "swap.h"
 
 int nice_to_weight[40] = {
  /* -20 */ 88761, 71755, 56483, 46273, 36291,
@@ -29,6 +31,7 @@ struct spinlock pid_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
+void kproc_start(void);
 
 extern char trampoline[]; // trampoline.S
 
@@ -63,6 +66,7 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  nsinit();
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->state = UNUSED;
@@ -114,6 +118,62 @@ allocpid()
   return pid;
 }
 
+static int
+pid_ns_is_ancestor(struct pid_namespace *ancestor, struct pid_namespace *ns)
+{
+  while(ns){
+    if(ns == ancestor)
+      return 1;
+    ns = ns->parent;
+  }
+  return 0;
+}
+
+static int
+pid_in_ns(struct proc *p, struct pid_namespace *ns)
+{
+  if(p == 0 || ns == 0 || p->pid_ns == 0)
+    return -1;
+  if(!pid_ns_is_ancestor(ns, p->pid_ns))
+    return -1;
+  if(ns->level < 0 || ns->level >= p->pid_map_len)
+    return -1;
+  return p->pid_map[ns->level];
+}
+
+static int
+pid_assign_newproc(struct proc *p, struct pid_namespace *ns)
+{
+  if(p == 0 || ns == 0)
+    return -1;
+  if(ns->level >= PIDNS_MAX_DEPTH)
+    return -1;
+
+  for(int i = 0; i < PIDNS_MAX_DEPTH; i++)
+    p->pid_map[i] = 0;
+  p->pid_map_len = ns->level + 1;
+
+  for(struct pid_namespace *cur = ns; cur; cur = cur->parent){
+    p->pid_map[cur->level] = pid_ns_allocpid(cur);
+  }
+  p->ns_pid = p->pid_map[ns->level];
+  return 0;
+}
+
+static int
+pid_assign_unshare(struct proc *p, struct pid_namespace *ns)
+{
+  if(p == 0 || ns == 0)
+    return -1;
+  if(ns->level >= PIDNS_MAX_DEPTH)
+    return -1;
+  if(p->pid_map_len <= ns->level)
+    p->pid_map_len = ns->level + 1;
+  p->pid_map[ns->level] = pid_ns_allocpid(ns);
+  p->ns_pid = p->pid_map[ns->level];
+  return 0;
+}
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -158,6 +218,23 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // Namespace and tracing defaults
+  p->pid_ns = 0;
+  p->mnt_ns = 0;
+  p->uts_ns = 0;
+  p->ipc_ns = 0;
+  p->ns_pid = 0;
+  p->pid_map_len = 0;
+  for(int i = 0; i < PIDNS_MAX_DEPTH; i++)
+    p->pid_map[i] = 0;
+  p->trace_mask = 0;
+  p->trace_count = 0;
+  p->is_kernel = 0;
+  p->is_swapd = 0;
+  p->swapping = 0;
+  p->kentry = 0;
+  p->kentry = 0;
+  
   // Initialize CFS default values for new processes
   p->nice = 0;
   p->weight = 1024;          // NICE_0_LOAD
@@ -166,6 +243,44 @@ found:
   p->spent_ticks = 0;
   p->last_sched = ticks;
   return p;
+}
+
+
+int
+create_kernel_process(void (*entry)(void), char *name)
+{
+  struct proc *p;
+
+  if((p = allocproc()) == 0)
+    return -1;
+
+  p->is_kernel = 1;
+  p->pid_ns = root_pid_ns;
+  p->mnt_ns = root_mnt_ns;
+  p->uts_ns = root_uts_ns;
+  p->ipc_ns = root_ipc_ns;
+  pid_ns_incref(p->pid_ns);
+  mnt_ns_incref(p->mnt_ns);
+  uts_ns_incref(p->uts_ns);
+  ipc_ns_incref(p->ipc_ns);
+  if(pid_assign_newproc(p, p->pid_ns) < 0){
+    freeproc(p);
+    release(&p->lock);
+    return -1;
+  }
+  p->pid_ns->init = p;
+
+  safestrcpy(p->name, name, sizeof(p->name));
+
+  p->kentry = entry;
+  memset(p->trapframe, 0, sizeof(*p->trapframe));
+  p->context.ra = (uint64)kproc_start;
+  p->context.sp = p->kstack + PGSIZE;
+
+  p->state = RUNNABLE;
+  release(&p->lock);
+
+  return p->pid;
 }
 
 // free a proc structure and the data hanging from it,
@@ -177,11 +292,37 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->pagetable){
+    release(&p->lock);
+    swap_free_all(p);
+    acquire(&p->lock);
+  }
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
+  p->ns_pid = 0;
+  p->pid_map_len = 0;
+  for(int i = 0; i < PIDNS_MAX_DEPTH; i++)
+    p->pid_map[i] = 0;
+  if(p->pid_ns)
+    pid_ns_decref(p->pid_ns);
+  if(p->mnt_ns)
+    mnt_ns_decref(p->mnt_ns);
+  if(p->uts_ns)
+    uts_ns_decref(p->uts_ns);
+  if(p->ipc_ns)
+    ipc_ns_decref(p->ipc_ns);
+  p->pid_ns = 0;
+  p->mnt_ns = 0;
+  p->uts_ns = 0;
+  p->ipc_ns = 0;
+  p->trace_mask = 0;
+  p->trace_count = 0;
+  p->is_kernel = 0;
+  p->is_swapd = 0;
+  p->swapping = 0;
   p->parent = 0;
   p->name[0] = 0;
   p->chan = 0;
@@ -234,6 +375,45 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmfree(pagetable, sz);
 }
 
+void
+trace_append(struct proc *p, int num, int ret)
+{
+  if(p == 0)
+    return;
+  acquire(&p->lock);
+  if(p->trace_count < NELEM(p->trace_entries)){
+    p->trace_entries[p->trace_count].pid = p->pid;
+    p->trace_entries[p->trace_count].num = num;
+    p->trace_entries[p->trace_count].ret = ret;
+    p->trace_count++;
+  }
+  release(&p->lock);
+}
+
+void
+trace_flush(struct proc *p)
+{
+  if(p == 0)
+    return;
+  struct trace_entry local[NELEM(p->trace_entries)];
+  int n = 0;
+
+  acquire(&p->lock);
+  n = p->trace_count;
+  if(n > NELEM(p->trace_entries))
+    n = NELEM(p->trace_entries);
+  for(int i = 0; i < n; i++)
+    local[i] = p->trace_entries[i];
+  p->trace_count = 0;
+  release(&p->lock);
+
+  for(int i = 0; i < n; i++){
+    const char *name = syscall_name(local[i].num);
+    printf("%d: syscall %s -> %d\n", local[i].pid, name, local[i].ret);
+  }
+}
+
+
 // Set up first user process.
 void
 userinit(void)
@@ -243,7 +423,25 @@ userinit(void)
   p = allocproc();
   initproc = p;
   
+  p->pid_ns = root_pid_ns;
+  p->mnt_ns = root_mnt_ns;
+  p->uts_ns = root_uts_ns;
+  p->ipc_ns = root_ipc_ns;
+  pid_ns_incref(p->pid_ns);
+  mnt_ns_incref(p->mnt_ns);
+  uts_ns_incref(p->uts_ns);
+  ipc_ns_incref(p->ipc_ns);
+  if(pid_assign_newproc(p, p->pid_ns) < 0)
+    panic("pid_assign userinit");
+  p->pid_ns->init = p;
+
   p->cwd = namei("/");
+  if(p->mnt_ns && p->mnt_ns->root == 0){
+    acquire(&p->mnt_ns->lock);
+    if(p->mnt_ns->root == 0)
+      p->mnt_ns->root = idup(p->cwd);
+    release(&p->mnt_ns->lock);
+  }
 
   p->state = RUNNABLE;
 
@@ -267,7 +465,9 @@ growproc(int n)
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uint64 newsz = sz + n;
+    swap_free_range(p, newsz, sz);
+    sz = uvmdealloc(p->pagetable, sz, newsz);
   }
   p->sz = sz;
   return 0;
@@ -301,6 +501,24 @@ kfork(void)
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
 
+  // inherit namespaces
+  np->pid_ns = p->pid_ns;
+  np->mnt_ns = p->mnt_ns;
+  np->uts_ns = p->uts_ns;
+  np->ipc_ns = p->ipc_ns;
+  pid_ns_incref(np->pid_ns);
+  mnt_ns_incref(np->mnt_ns);
+  uts_ns_incref(np->uts_ns);
+  ipc_ns_incref(np->ipc_ns);
+  if(pid_assign_newproc(np, np->pid_ns) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+
+  // inherit syscall trace mask
+  np->trace_mask = p->trace_mask;
+
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
@@ -309,7 +527,9 @@ kfork(void)
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
-  pid = np->pid;
+  pid = pid_in_ns(np, p->pid_ns);
+  if(pid < 0)
+    pid = np->ns_pid;
 
   release(&np->lock);
 
@@ -322,6 +542,66 @@ kfork(void)
   release(&np->lock);
 
   return pid;
+}
+
+// Create a kernel process that starts executing at entry.
+// Unshare namespaces for the current process.
+int
+kunshare(int flags)
+{
+  struct proc *p = myproc();
+  struct pid_namespace *new_pid = 0;
+  struct mnt_namespace *new_mnt = 0;
+  struct uts_namespace *new_uts = 0;
+  struct ipc_namespace *new_ipc = 0;
+
+  if(flags & CLONE_NEWPID)
+    new_pid = pid_ns_alloc(p->pid_ns);
+  if(flags & CLONE_NEWNS)
+    new_mnt = mnt_ns_alloc(p->mnt_ns);
+  if(flags & CLONE_NEWUTS)
+    new_uts = uts_ns_alloc(p->uts_ns);
+  if(flags & CLONE_NEWIPC)
+    new_ipc = ipc_ns_alloc(p->ipc_ns);
+
+  if((flags & CLONE_NEWPID) && new_pid == 0)
+    goto fail;
+  if((flags & CLONE_NEWNS) && new_mnt == 0)
+    goto fail;
+  if((flags & CLONE_NEWUTS) && new_uts == 0)
+    goto fail;
+  if((flags & CLONE_NEWIPC) && new_ipc == 0)
+    goto fail;
+
+  acquire(&p->lock);
+  if(new_pid){
+    pid_ns_decref(p->pid_ns);
+    p->pid_ns = new_pid;
+    pid_assign_unshare(p, p->pid_ns);
+    p->pid_ns->init = p;
+  }
+  if(new_mnt){
+    mnt_ns_decref(p->mnt_ns);
+    p->mnt_ns = new_mnt;
+  }
+  if(new_uts){
+    uts_ns_decref(p->uts_ns);
+    p->uts_ns = new_uts;
+  }
+  if(new_ipc){
+    ipc_ns_decref(p->ipc_ns);
+    p->ipc_ns = new_ipc;
+  }
+  release(&p->lock);
+
+  return 0;
+
+fail:
+  if(new_pid) pid_ns_decref(new_pid);
+  if(new_mnt) mnt_ns_decref(new_mnt);
+  if(new_uts) uts_ns_decref(new_uts);
+  if(new_ipc) ipc_ns_decref(new_ipc);
+  return -1;
 }
 
 // Pass p's abandoned children to init.
@@ -363,6 +643,9 @@ kexit(int status)
   iput(p->cwd);
   end_op();
   p->cwd = 0;
+
+  // flush any pending syscall traces before exiting
+  trace_flush(p);
 
   acquire(&wait_lock);
 
@@ -406,7 +689,9 @@ kwait(uint64 addr)
         havekids = 1;
         if(pp->state == ZOMBIE){
           // Found one.
-          pid = pp->pid;
+          pid = pid_in_ns(pp, p->pid_ns);
+          if(pid < 0)
+            pid = pp->ns_pid;
           if(addr != 0 && copyout(p->pagetable, addr, (char *)&pp->xstate,
                                   sizeof(pp->xstate)) < 0) {
             release(&pp->lock);
@@ -480,7 +765,7 @@ scheduler(void)
 
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if(p->state == RUNNABLE) {
+      if(p->state == RUNNABLE && !p->swapping) {
         if(best_p == 0 || p->vruntime < best_p->vruntime) {
           if(best_p)
             release(&best_p->lock);
@@ -569,7 +854,7 @@ forkret(void)
     // regular process (e.g., because it calls sleep), and thus cannot
     // be run from main().
     fsinit(ROOTDEV);
-
+    swap_fs_ready();
     first = 0;
     // ensure other cores see first=0.
     __sync_synchronize();
@@ -587,6 +872,19 @@ forkret(void)
   uint64 satp = MAKE_SATP(p->pagetable);
   uint64 trampoline_userret = TRAMPOLINE + (userret - trampoline);
   ((void (*)(uint64))trampoline_userret)(satp);
+}
+
+// Entry wrapper for kernel processes. Releases p->lock before running.
+void
+kproc_start(void)
+{
+  struct proc *p = myproc();
+  void (*fn)(void) = p->kentry;
+
+  release(&p->lock);
+  if(fn)
+    fn();
+  panic("kproc_start");
 }
 
 // Sleep on channel chan, releasing condition lock lk.
@@ -645,10 +943,12 @@ int
 kkill(int pid)
 {
   struct proc *p;
+  struct proc *cur = myproc();
+  struct pid_namespace *ns = cur ? cur->pid_ns : 0;
 
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
-    if(p->pid == pid){
+    if(ns && pid_in_ns(p, ns) == pid){
       p->killed = 1;
       if(p->state == SLEEPING){
         // Wake process from sleep().

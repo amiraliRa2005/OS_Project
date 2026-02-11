@@ -4,6 +4,10 @@ struct file;
 struct inode;
 struct pipe;
 struct proc;
+struct pid_namespace;
+struct mnt_namespace;
+struct uts_namespace;
+struct ipc_namespace;
 struct spinlock;
 struct sleeplock;
 struct stat;
@@ -81,6 +85,8 @@ int             pipewrite(struct pipe*, uint64, int);
 int             printf(char*, ...) __attribute__ ((format (printf, 1, 2)));
 void            panic(char*) __attribute__((noreturn));
 void            printfinit(void);
+void            printlock_acquire(void);
+void            printlock_release(void);
 
 // proc.c
 int             cpuid(void);
@@ -103,12 +109,35 @@ void            userinit(void);
 int             kwait(uint64);
 void            wakeup(void*);
 void            yield(void);
+int             create_kernel_process(void (*entry)(void), char *name);
+int             kunshare(int flags);
+void            trace_append(struct proc *p, int num, int ret);
+void            trace_flush(struct proc *p);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 void            collect_proc_info(struct proc*, struct proc_info*); //added
 int             build_process_tree(struct proc_tree*, int);         //added
 int             chpnice(int, int);                                  //added
+
+// namespace.c
+void            nsinit(void);
+struct pid_namespace* pid_ns_alloc(struct pid_namespace *parent);
+void            pid_ns_incref(struct pid_namespace *ns);
+void            pid_ns_decref(struct pid_namespace *ns);
+int             pid_ns_allocpid(struct pid_namespace *ns);
+struct mnt_namespace* mnt_ns_alloc(struct mnt_namespace *parent);
+void            mnt_ns_incref(struct mnt_namespace *ns);
+void            mnt_ns_decref(struct mnt_namespace *ns);
+struct uts_namespace* uts_ns_alloc(struct uts_namespace *parent);
+void            uts_ns_incref(struct uts_namespace *ns);
+void            uts_ns_decref(struct uts_namespace *ns);
+struct ipc_namespace* ipc_ns_alloc(struct ipc_namespace *parent);
+void            ipc_ns_incref(struct ipc_namespace *ns);
+void            ipc_ns_decref(struct ipc_namespace *ns);
+
+// syscall.c
+const char*     syscall_name(int num);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -178,6 +207,14 @@ int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
 int             cow_handler(pagetable_t, uint64); //added
+
+// swap.c
+void            swapinit(void);
+void            swap_fs_ready(void);
+int             swap_request(int op, struct proc *p, uint64 va);
+int             swap_free_range(struct proc *p, uint64 start, uint64 end);
+void            swap_free_all(struct proc *p);
+int             swap_enabled(void);
 
 // plic.c
 void            plicinit(void);

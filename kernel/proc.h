@@ -1,4 +1,12 @@
+#ifndef PROC_H
+#define PROC_H
+
 #include "proc_tree.h" //added
+#include "namespace.h"
+struct pid_namespace;
+struct mnt_namespace;
+struct uts_namespace;
+struct ipc_namespace;
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -82,6 +90,7 @@ struct trapframe {
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -106,6 +115,31 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 
+  // namespaces
+  struct pid_namespace *pid_ns;
+  struct mnt_namespace *mnt_ns;
+  struct uts_namespace *uts_ns;
+  struct ipc_namespace *ipc_ns;
+  int ns_pid;
+  int pid_map_len;
+  int pid_map[PIDNS_MAX_DEPTH];
+
+  // syscall tracing
+  uint64 trace_mask;
+  int trace_count;
+  struct trace_entry {
+    int pid;
+    int num;
+    int ret;
+  } trace_entries[64];
+
+  // kernel process flags
+  int is_kernel;
+  int is_swapd;
+  int swapping;
+  void (*kentry)(void);
+
+
   int vruntime;
   int weight;
   int nice;
@@ -114,3 +148,5 @@ struct proc {
   int timeslice;
   int spent_ticks;
 };
+
+#endif // PROC_H

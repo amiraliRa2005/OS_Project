@@ -7,6 +7,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "swap.h"
+#include "vm.h"
 
 extern int ref_count[]; 
 
@@ -229,9 +231,17 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uint flags;
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
+    if((*pte & PTE_V) == 0){
+      if(*pte & PTE_SWAP){
+        if(vmfault(old, i, VMFAULT_READ) < 0)
+          goto err;
+        if((pte = walk(old, i, 0)) == 0 || (*pte & PTE_V) == 0)
+          goto err;
+      } else {
+        continue;
+      }
+    }
     pa = PTE2PA(*pte);  
     if(*pte & PTE_W) {
       *pte &= ~PTE_W;
@@ -286,6 +296,59 @@ cow_handler(pagetable_t pagetable, uint64 va)
   return 0;
 }
 
+uint64
+vmfault(pagetable_t pagetable, uint64 va, int action)
+{
+  struct proc *p = myproc();
+  pte_t *pte;
+
+  if(p == 0)
+    return -1;
+  if(va >= MAXVA)
+    return -1;
+  if(va >= p->sz)
+    return -1;
+
+  va = PGROUNDDOWN(va);
+  pte = walk(pagetable, va, 0);
+
+  if(pte && (*pte & PTE_V)){
+    if((*pte & PTE_U) == 0)
+      return -1;
+    if(action == VMFAULT_WRITE){
+      if((*pte & PTE_COW) != 0)
+        return cow_handler(pagetable, va);
+      if((*pte & PTE_W) == 0)
+        return -1;
+    }
+    if(action == VMFAULT_EXEC && ((*pte & PTE_X) == 0))
+      return -1;
+    return 0;
+  }
+
+  if(pte && (*pte & PTE_SWAP)){
+    if(swap_request(SWAP_OP_IN, p, va) < 0)
+      return -1;
+    return 0;
+  }
+
+  // Lazy allocation
+  char *mem = kalloc();
+  if(mem == 0){
+    if(swap_request(SWAP_OP_OUT, 0, 0) == 0)
+      mem = kalloc();
+  }
+  if(mem == 0)
+    return -1;
+  memset(mem, 0, PGSIZE);
+  if(mappages(pagetable, va, PGSIZE, (uint64)mem, PTE_R|PTE_W|PTE_U) < 0){
+    kfree(mem);
+    return -1;
+  }
+  sfence_vma();
+  return 0;
+}
+
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
@@ -303,7 +366,12 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     }
 
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) return -1;
+    if(pa0 == 0){
+      if(vmfault(pagetable, va0, VMFAULT_WRITE) < 0)
+        return -1;
+      pa0 = walkaddr(pagetable, va0);
+      if(pa0 == 0) return -1;
+    }
       
     n = PGSIZE - (dstva - va0);
     if(n > len) n = len;
@@ -325,8 +393,13 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0){
+      if(vmfault(pagetable, va0, VMFAULT_READ) < 0)
+        return -1;
+      pa0 = walkaddr(pagetable, va0);
+      if(pa0 == 0)
+        return -1;
+    }
       
     n = PGSIZE - (srcva - va0);
     if(n > len)
@@ -349,8 +422,13 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0){
+      if(vmfault(pagetable, va0, VMFAULT_READ) < 0)
+        return -1;
+      pa0 = walkaddr(pagetable, va0);
+      if(pa0 == 0)
+        return -1;
+    }
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;

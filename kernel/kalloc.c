@@ -4,6 +4,7 @@
 #include "spinlock.h"
 #include "riscv.h"
 #include "defs.h"
+#include "swap.h"
 
 extern char end[]; // first address after kernel.
 
@@ -83,6 +84,19 @@ kalloc(void)
   if(r)
     kmem.freelist = r->next;
   release(&kmem.lock);
+
+  if(r == 0 && swap_enabled()){
+    struct proc *p = myproc();
+    if(p && !p->is_swapd){
+      if(swap_request(SWAP_OP_OUT, 0, 0) == 0){
+        acquire(&kmem.lock);
+        r = kmem.freelist;
+        if(r)
+          kmem.freelist = r->next;
+        release(&kmem.lock);
+      }
+    }
+  }
 
   if(r){
     memset((char*)r, 5, PGSIZE);

@@ -8,11 +8,13 @@ OBJS = \
   $K/printf.o \
   $K/uart.o \
   $K/kalloc.o \
+  $K/swap.o \
   $K/spinlock.o \
   $K/string.o \
   $K/main.o \
   $K/vm.o \
   $K/proc.o \
+  $K/namespace.o \
   $K/swtch.o \
   $K/trampoline.o \
   $K/trap.o \
@@ -147,6 +149,14 @@ UPROGS=\
 	$U/_test_counter\
 	$U/_ptree\
 	$U/_lptree\
+	$U/_swaptest\
+	$U/_nstest\
+	$U/_nspidtest\
+	$U/_nsutstest\
+	$U/_nsipctest\
+	$U/_nsmounttest\
+	$U/_trace\
+	$U/_tracetest\
 	$U/_cowtest\
 	$U/_cfstest\
 
