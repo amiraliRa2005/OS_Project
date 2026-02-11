@@ -134,6 +134,20 @@ printf(char *fmt, ...)
 }
 
 void
+printlock_acquire(void)
+{
+  if(panicking == 0)
+    acquire(&pr.lock);
+}
+
+void
+printlock_release(void)
+{
+  if(panicking == 0)
+    release(&pr.lock);
+}
+
+void
 panic(char *s)
 {
   panicking = 1;

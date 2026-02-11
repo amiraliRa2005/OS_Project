@@ -466,7 +466,9 @@ sys_exec(void)
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
     kfree(argv[i]);
 
-  return ret;
+  if(ret < 0)
+    return -1;
+  return 0;
 
  bad:
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)

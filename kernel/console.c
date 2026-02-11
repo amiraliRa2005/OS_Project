@@ -62,6 +62,21 @@ consolewrite(int user_src, uint64 src, int n)
 {
   char buf[32]; // move batches from user space to uart.
   int i = 0;
+  struct proc *p = myproc();
+
+  // If tracing is enabled for this process, use synchronous output so
+  // kernel trace prints don't interleave with user writes.
+  if(p && p->trace_mask){
+    char c;
+    printlock_acquire();
+    for(i = 0; i < n; i++){
+      if(either_copyin(&c, user_src, src+i, 1) == -1)
+        break;
+      uartputc_sync(c);
+    }
+    printlock_release();
+    return i;
+  }
 
   while(i < n){
     int nn = sizeof(buf);
