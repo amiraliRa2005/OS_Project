@@ -24,3 +24,8 @@
 #define SYS_ptree  23   //added
 #define SYS_physaddr 24 //added
 #define SYS_chpnice 25
+#define SYS_trace 26
+#define SYS_unshare 27
+#define SYS_setHostname 28
+#define SYS_getHostname 29
+#define SYS_getmntnsid 30

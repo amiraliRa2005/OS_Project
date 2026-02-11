@@ -1,5 +1,10 @@
 #define SBRK_ERROR ((char *)-1)
 typedef unsigned int uint; //added
+#define CLONE_NEWPID 0x1
+#define CLONE_NEWNS  0x2
+#define CLONE_NEWUTS 0x4
+#define CLONE_NEWIPC 0x8
+#define UTS_HOSTNAME_MAX 64
 
 struct stat;
 
@@ -29,6 +34,11 @@ int sysclcnt(void);                         //added
 int ptree(int, void*);                      //added
 int physaddr(void*);                        //added
 int chpnice(int pid, int priority);         //added
+int trace(int mask);
+int unshare(int flags);
+int setHostname(const char *name);
+int getHostname(char *buf, int len);
+int getmntnsid(void);
 
 // ulib.c
 int stat(const char*, struct stat*);

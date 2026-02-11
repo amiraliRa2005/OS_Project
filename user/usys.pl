@@ -46,3 +46,8 @@ entry("sysclcnt");
 entry("ptree");
 entry("physaddr");
 entry("chpnice");
+entry("trace");
+entry("unshare");
+entry("setHostname");
+entry("getHostname");
+entry("getmntnsid");

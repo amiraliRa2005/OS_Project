@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "namespace.h"
 extern struct proc proc[NPROC];
 extern int nice_to_weight[40];
 
@@ -33,6 +34,76 @@ sys_chpnice(void)
   return -1;
 }
 
+uint64
+sys_trace(void)
+{
+  int mask;
+  argint(0, &mask);
+  struct proc *p = myproc();
+  if(mask == 0)
+    trace_flush(p);
+  p->trace_mask = (uint64)mask;
+  return 0;
+}
+
+uint64
+sys_unshare(void)
+{
+  int flags;
+  argint(0, &flags);
+  return kunshare(flags);
+}
+
+uint64
+sys_setHostname(void)
+{
+  char buf[UTS_HOSTNAME_MAX];
+  if(argstr(0, buf, UTS_HOSTNAME_MAX) < 0)
+    return -1;
+  struct uts_namespace *uts = myproc()->uts_ns;
+  acquire(&uts->lock);
+  safestrcpy(uts->hostname, buf, UTS_HOSTNAME_MAX);
+  release(&uts->lock);
+  return 0;
+}
+
+uint64
+sys_getHostname(void)
+{
+  uint64 addr;
+  int len;
+  char buf[UTS_HOSTNAME_MAX];
+
+  argaddr(0, &addr);
+  argint(1, &len);
+  if(len <= 0)
+    return -1;
+
+  struct uts_namespace *uts = myproc()->uts_ns;
+  acquire(&uts->lock);
+  safestrcpy(buf, uts->hostname, UTS_HOSTNAME_MAX);
+  release(&uts->lock);
+
+  int n = strlen(buf) + 1;
+  if(len < n)
+    n = len;
+  if(copyout(myproc()->pagetable, addr, buf, n) < 0)
+    return -1;
+  return 0;
+}
+
+uint64
+sys_getmntnsid(void)
+{
+  struct mnt_namespace *mnt = myproc()->mnt_ns;
+  if(mnt == 0)
+    return -1;
+  acquire(&mnt->lock);
+  int id = mnt->nsid;
+  release(&mnt->lock);
+  return id;
+}
+
 
 uint64
 sys_exit(void)
@@ -46,7 +117,7 @@ sys_exit(void)
 uint64
 sys_getpid(void)
 {
-  return myproc()->pid;
+  return myproc()->ns_pid;
 }
 
 uint64
@@ -171,4 +242,3 @@ sys_ptree(void)
 
   return 0;
 }
-

@@ -17,6 +17,7 @@ struct pipe {
   uint nwrite;    // number of bytes written
   int readopen;   // read fd is still open
   int writeopen;  // write fd is still open
+  struct ipc_namespace *ipc_ns;
 };
 
 int
@@ -35,6 +36,7 @@ pipealloc(struct file **f0, struct file **f1)
   pi->nwrite = 0;
   pi->nread = 0;
   initlock(&pi->lock, "pipe");
+  pi->ipc_ns = myproc()->ipc_ns;
   (*f0)->type = FD_PIPE;
   (*f0)->readable = 1;
   (*f0)->writable = 0;
@@ -80,6 +82,10 @@ pipewrite(struct pipe *pi, uint64 addr, int n)
   struct proc *pr = myproc();
 
   acquire(&pi->lock);
+  if(pr->ipc_ns != pi->ipc_ns){
+    release(&pi->lock);
+    return -1;
+  }
   while(i < n){
     if(pi->readopen == 0 || killed(pr)){
       release(&pi->lock);
@@ -110,6 +116,10 @@ piperead(struct pipe *pi, uint64 addr, int n)
   char ch;
 
   acquire(&pi->lock);
+  if(pr->ipc_ns != pi->ipc_ns){
+    release(&pi->lock);
+    return -1;
+  }
   while(pi->nread == pi->nwrite && pi->writeopen){  //DOC: pipe-empty
     if(killed(pr)){
       release(&pi->lock);

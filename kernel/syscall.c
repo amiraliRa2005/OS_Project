@@ -106,6 +106,11 @@ extern uint64 sys_sysclcnt(void); //added
 extern uint64 sys_ptree(void); //added
 extern uint64 sys_physaddr(void); //added
 extern uint64 sys_chpnice(void);   //added
+extern uint64 sys_trace(void);
+extern uint64 sys_unshare(void);
+extern uint64 sys_setHostname(void);
+extern uint64 sys_getHostname(void);
+extern uint64 sys_getmntnsid(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -135,7 +140,53 @@ static uint64 (*syscalls[])(void) = {
 [SYS_ptree]    sys_ptree,    //added
 [SYS_physaddr] sys_physaddr, //adedd
 [SYS_chpnice] sys_chpnice,   //added
+[SYS_trace]   sys_trace,
+[SYS_unshare] sys_unshare,
+[SYS_setHostname] sys_setHostname,
+[SYS_getHostname] sys_getHostname,
+[SYS_getmntnsid] sys_getmntnsid,
 };
+
+static char *syscall_names[] = {
+[SYS_fork]    "fork",
+[SYS_exit]    "exit",
+[SYS_wait]    "wait",
+[SYS_pipe]    "pipe",
+[SYS_read]    "read",
+[SYS_kill]    "kill",
+[SYS_exec]    "exec",
+[SYS_fstat]   "fstat",
+[SYS_chdir]   "chdir",
+[SYS_dup]     "dup",
+[SYS_getpid]  "getpid",
+[SYS_sbrk]    "sbrk",
+[SYS_pause]   "pause",
+[SYS_uptime]  "uptime",
+[SYS_open]    "open",
+[SYS_write]   "write",
+[SYS_mknod]   "mknod",
+[SYS_unlink]  "unlink",
+[SYS_link]    "link",
+[SYS_mkdir]   "mkdir",
+[SYS_close]   "close",
+[SYS_sysclcnt] "sysclcnt",
+[SYS_ptree]    "ptree",
+[SYS_physaddr] "physaddr",
+[SYS_chpnice]  "chpnice",
+[SYS_trace]    "trace",
+[SYS_unshare]  "unshare",
+[SYS_setHostname] "setHostname",
+[SYS_getHostname] "getHostname",
+[SYS_getmntnsid] "getmntnsid",
+};
+
+const char*
+syscall_name(int num)
+{
+  if(num > 0 && num < NELEM(syscall_names) && syscall_names[num])
+    return syscall_names[num];
+  return "unknown";
+}
 
 void
 syscall(void)
@@ -149,6 +200,9 @@ syscall(void)
     // and store its return value in p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();
     syscall_count++; //added
+    if(p->trace_mask & (1L << num)){
+      trace_append(p, num, (int)p->trapframe->a0);
+    }
   } else {
     printf("%d %s: unknown sys call %d\n",
             p->pid, p->name, num);

@@ -16,6 +16,7 @@
 #include "stat.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "namespace.h"
 #include "sleeplock.h"
 #include "fs.h"
 #include "buf.h"
@@ -676,10 +677,15 @@ namex(char *path, int nameiparent, char *name)
 {
   struct inode *ip, *next;
 
-  if(*path == '/')
-    ip = iget(ROOTDEV, ROOTINO);
-  else
+  if(*path == '/'){
+    struct proc *p = myproc();
+    if(p && p->mnt_ns && p->mnt_ns->root)
+      ip = idup(p->mnt_ns->root);
+    else
+      ip = iget(ROOTDEV, ROOTINO);
+  } else {
     ip = idup(myproc()->cwd);
+  }
 
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
